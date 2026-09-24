@@ -1,0 +1,16 @@
+# build artifacts
+bin/
+obj/
+dist/
+publish/
+
+# test assets & scratch (local only)
+.samples/
+samples/
+.scratch/
+*.user
+
+# converted outputs
+*.png
+*.avif
+!docs/**/*.png
