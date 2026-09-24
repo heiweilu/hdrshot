@@ -2,26 +2,62 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 
 namespace HdrShot;
 
 internal static class Program
 {
+    [DllImport("kernel32.dll")]
+    private static extern uint GetConsoleProcessList([Out] uint[] processList, uint processCount);
+
+    /// <summary>
+    /// True when we own the console alone — i.e. launched by double-click / drag-drop from
+    /// Explorer. In that case the console window would vanish on exit, so we pause.
+    /// </summary>
+    private static bool ConsoleOwnedAlone()
+    {
+        try
+        {
+            var procs = new uint[2];
+            uint n = GetConsoleProcessList(procs, 2);
+            return n <= 1;
+        }
+        catch { return false; }
+    }
+
     private static int Main(string[] args)
     {
         try
         {
-            return Run(args);
+            int exit = Run(args);
+            if (args.Length > 0 && ConsoleOwnedAlone())
+            {
+                Console.WriteLine();
+                Console.Write("按回车键退出... (press Enter to exit)");
+                Console.ReadLine();
+            }
+            return exit;
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"error: {ex}");
+            if (args.Length > 0 && ConsoleOwnedAlone())
+            {
+                Console.Write("按回车键退出... (press Enter to exit)");
+                Console.ReadLine();
+            }
             return 2;
         }
     }
 
     private static int Run(string[] args)
     {
+        if (args.Length == 0)
+        {
+            // double-clicked (no arguments) → open the drag-drop GUI
+            return Gui.Run();
+        }
         if (args.Length == 3 && args[0] == "comparepng")
         {
             return PngCompare.Run(args[1], args[2]);
@@ -368,7 +404,10 @@ internal static class Program
             hdrshot — convert Windows/NVIDIA HDR screenshots (.jxr, scRGB float) to shareable HDR formats
 
             usage: hdrshot <files or wildcards...> [options]
-                   (or drag .jxr files onto hdrshot.exe)
+
+              double-click hdrshot.exe            -> opens the drag-drop GUI
+              drag .jxr files onto hdrshot.exe    -> converts (console pauses at the end)
+              hdrshot screenshot.jxr              -> CLI conversion (UltraHDR JPEG)
 
             outputs (all keep the full HDR brightness of the original):
               UltraHDR JPEG  SDR-compatible base + gain map — shows HDR in Chrome/Edge/
