@@ -26,11 +26,28 @@ internal static class Program
         {
             return PngCompare.Run(args[1], args[2]);
         }
+        if (args.Length == 1 && args[0] == "--gui")
+        {
+            return Gui.Run();
+        }
+        if (args.Length >= 2 && args[0] == "--watch")
+        {
+            return Watch(args[1], args);
+        }
+        if (args.Length == 1 && args[0] == "--install-menus")
+        {
+            return InstallMenus();
+        }
+        if (args.Length == 1 && args[0] == "--uninstall-menus")
+        {
+            return UninstallMenus();
+        }
 
         var inputs = new List<string>();
         string? outDir = null;
-        string format = "both";
+        string format = "jpeg";
         int quality = 60;
+        double sdrWhite = 0;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -46,8 +63,14 @@ internal static class Program
                 case "-q":
                     quality = int.Parse(args[++i]);
                     break;
+                case "--sdr-white":
+                    sdrWhite = double.Parse(args[++i]);
+                    break;
                 case "--avifenc":
                     Environment.SetEnvironmentVariable("HDRSHOT_AVIFENC", args[++i]);
+                    break;
+                case "--ultrahdr":
+                    Environment.SetEnvironmentVariable("HDRSHOT_ULTRAHDR", args[++i]);
                     break;
                 case "-h":
                 case "--help":
@@ -73,22 +96,45 @@ internal static class Program
             PrintHelp();
             return 1;
         }
-        if (format != "png" && format != "avif" && format != "both")
+        if (format != "jpeg" && format != "png" && format != "avif" && format != "all" && format != "both")
         {
-            Console.Error.WriteLine("error: -f must be png, avif or both");
+            Console.Error.WriteLine("error: -f must be jpeg, png, avif or all");
             return 1;
         }
+        if (format == "both") format = "all";
 
-        string? avifencPath = ResolveAvifenc();
-        if (avifencPath == null && format != "png")
+        bool wantPng = format is "png" or "all";
+        bool wantAvif = format is "avif" or "all";
+        bool wantJpeg = format is "jpeg" or "all";
+
+        string? avifencPath = ResolveTool("avifenc.exe", "--version", "HDRSHOT_AVIFENC");
+        if (wantAvif && avifencPath == null)
         {
             if (format == "avif")
             {
                 Console.Error.WriteLine("error: avifenc.exe not found — put it in tools\\ next to hdrshot.exe or pass --avifenc <path>");
                 return 1;
             }
-            Console.WriteLine("note: avifenc.exe not found, converting to HDR PNG only");
-            format = "png";
+            Console.WriteLine("note: avifenc.exe not found, skipping HDR AVIF output");
+            wantAvif = false;
+        }
+
+        string? ultrahdrPath = ResolveTool("ultrahdr_app.exe", "--bogus-flag", "HDRSHOT_ULTRAHDR");
+        if (wantJpeg && ultrahdrPath == null)
+        {
+            if (format == "jpeg")
+            {
+                Console.Error.WriteLine("error: ultrahdr_app.exe not found — put it in tools\\ next to hdrshot.exe or pass --ultrahdr <path>");
+                return 1;
+            }
+            Console.WriteLine("note: ultrahdr_app.exe not found, skipping UltraHDR JPEG output");
+            wantJpeg = false;
+        }
+
+        if (!wantPng && !wantAvif && !wantJpeg)
+        {
+            Console.Error.WriteLine("error: no output format available");
+            return 1;
         }
 
         int failures = 0;
@@ -97,12 +143,12 @@ internal static class Program
         {
             try
             {
-                ConvertOne(input, outDir, format, quality, avifencPath);
+                ConvertOne(input, outDir, wantPng, wantAvif, wantJpeg, quality, sdrWhite, avifencPath, ultrahdrPath);
             }
             catch (Exception ex)
             {
                 failures++;
-                Console.Error.WriteLine($"error [{input}]: {ex}");
+                Console.Error.WriteLine($"error [{input}]: {ex.Message}");
             }
         }
 
@@ -110,7 +156,8 @@ internal static class Program
         return failures == 0 ? 0 : 1;
     }
 
-    private static void ConvertOne(string input, string? outDir, string format, int quality, string? avifencPath)
+    internal static void ConvertOne(string input, string? outDir, bool wantPng, bool wantAvif, bool wantJpeg,
+        int quality, double sdrWhite, string? avifencPath, string? ultrahdrPath)
     {
         var sw = Stopwatch.StartNew();
         string fullPath = Path.GetFullPath(input);
@@ -126,19 +173,32 @@ internal static class Program
         var converted = HdrConvert.ScRgbToPq2100(rgba, width, height);
         Console.WriteLine($"  MaxCLL {converted.MaxCllNits} nits / MaxFALL {converted.MaxFallNits} nits, convert {sw.ElapsedMilliseconds} ms");
 
-        string pngPath = Path.Combine(dir, baseName + ".png");
-        PngWriter.Write16BitPqRgb(pngPath, converted);
-        Console.WriteLine($"  -> {pngPath} ({new FileInfo(pngPath).Length / 1048576.0:F1} MiB, {sw.ElapsedMilliseconds} ms)");
-
-        if (format is "avif" or "both")
+        if (wantJpeg)
         {
-            string avifPath = Path.Combine(dir, baseName + ".avif");
-            RunAvifenc(avifencPath!, pngPath, avifPath, quality);
-            Console.WriteLine($"  -> {avifPath} ({new FileInfo(avifPath).Length / 1048576.0:F1} MiB, {sw.ElapsedMilliseconds} ms)");
+            var sdrYuv = HdrConvert.ScRgbToSdrYuv420(rgba, width, height, converted.MaxFallNits, out double usedWhite, sdrWhite);
+            Console.WriteLine($"  UltraHDR SDR base: white = {usedWhite:F0} nits (mapped from {converted.MaxFallNits} nits MaxFALL)");
+
+            string jpegPath = Path.Combine(dir, baseName + ".jpg");
+            UltraHdrEncoder.EncodeFromPq10(converted.Pixels, sdrYuv, width, height, jpegPath, ultrahdrPath!);
+            Console.WriteLine($"  -> {jpegPath} ({new FileInfo(jpegPath).Length / 1048576.0:F1} MiB, {sw.ElapsedMilliseconds} ms)");
+        }
+
+        if (wantPng || wantAvif)
+        {
+            string pngPath = Path.Combine(dir, baseName + ".png");
+            PngWriter.Write16BitPqRgb(pngPath, converted);
+            Console.WriteLine($"  -> {pngPath} ({new FileInfo(pngPath).Length / 1048576.0:F1} MiB, {sw.ElapsedMilliseconds} ms)");
+
+            if (wantAvif)
+            {
+                string avifPath = Path.Combine(dir, baseName + ".avif");
+                RunAvifenc(avifencPath!, pngPath, avifPath, quality);
+                Console.WriteLine($"  -> {avifPath} ({new FileInfo(avifPath).Length / 1048576.0:F1} MiB, {sw.ElapsedMilliseconds} ms)");
+            }
         }
     }
 
-    private static void RunAvifenc(string avifencPath, string pngPath, string avifPath, int quality)
+    internal static void RunAvifenc(string avifencPath, string pngPath, string avifPath, int quality)
     {
         int jobs = Math.Clamp(Environment.ProcessorCount, 1, 64);
         var psi = new ProcessStartInfo
@@ -152,21 +212,21 @@ internal static class Program
         if (p.ExitCode != 0) throw new InvalidOperationException($"avifenc exited with code {p.ExitCode}");
     }
 
-    private static string? ResolveAvifenc()
+    private static string? ResolveTool(string exeName, string probeArgs, string envVarName)
     {
-        string? explicitPath = Environment.GetEnvironmentVariable("HDRSHOT_AVIFENC");
+        string? explicitPath = Environment.GetEnvironmentVariable(envVarName);
         foreach (string? candidate in new string?[]
         {
             explicitPath,
-            Path.Combine(AppContext.BaseDirectory, "tools", "avifenc.exe"),
-            Path.Combine(AppContext.BaseDirectory, "avifenc.exe"),
-            "avifenc",
+            Path.Combine(AppContext.BaseDirectory, "tools", exeName),
+            Path.Combine(AppContext.BaseDirectory, exeName),
+            exeName,
         })
         {
             if (string.IsNullOrEmpty(candidate)) continue;
             try
             {
-                var psi = new ProcessStartInfo(candidate, "--version")
+                var psi = new ProcessStartInfo(candidate, probeArgs)
                 {
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
@@ -175,8 +235,8 @@ internal static class Program
                 };
                 using var p = Process.Start(psi);
                 if (p == null) continue;
-                p.WaitForExit(10000);
-                if (p.ExitCode == 0) return Path.GetFullPath(candidate);
+                p.WaitForExit(20000);
+                return Path.GetFullPath(candidate);
             }
             catch
             {
@@ -186,26 +246,154 @@ internal static class Program
         return null;
     }
 
+    internal static string RequireTool(string exeName, string envVarName, string probe = "--version")
+        => ResolveTool(exeName, probe, envVarName)
+           ?? throw new InvalidOperationException($"{exeName} not found — put it in tools\\ next to hdrshot.exe");
+
+    // ---- watch folder mode ----
+
+    private static int Watch(string dir, string[] args)
+    {
+        if (!Directory.Exists(dir))
+        {
+            Console.Error.WriteLine($"error: watch directory not found: {dir}");
+            return 1;
+        }
+
+        string? outDir = null;
+        string format = "jpeg";
+        for (int i = 2; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "-o": outDir = args[++i]; break;
+                case "-f": format = args[++i].ToLowerInvariant(); break;
+            }
+        }
+        bool wantPng = format is "png" or "all";
+        bool wantAvif = format is "avif" or "all";
+        bool wantJpeg = format is "jpeg" or "all";
+
+        string? avifencPath = wantAvif ? ResolveTool("avifenc.exe", "--version", "HDRSHOT_AVIFENC") : null;
+        string? ultrahdrPath = wantJpeg ? ResolveTool("ultrahdr_app.exe", "--watch-probe", "HDRSHOT_ULTRAHDR") : null;
+        if ((wantAvif && avifencPath == null) || (wantJpeg && ultrahdrPath == null))
+        {
+            Console.Error.WriteLine("error: required encoder not found in tools\\");
+            return 1;
+        }
+
+        Console.WriteLine($"watching {Path.GetFullPath(dir)} for new .jxr files — Ctrl+C to stop");
+        using var watcher = new FileSystemWatcher(Path.GetFullPath(dir), "*.jxr")
+        {
+            IncludeSubdirectories = false,
+            EnableRaisingEvents = true,
+        };
+        watcher.Created += (_, e) =>
+        {
+            try
+            {
+                // screenshots are written asynchronously — wait for the writer to finish
+                for (int attempt = 0; attempt < 5; attempt++)
+                {
+                    try
+                    {
+                        using var fs = File.Open(e.FullPath, FileMode.Open, FileAccess.Read, FileShare.None);
+                        break;
+                    }
+                    catch (IOException)
+                    {
+                        System.Threading.Thread.Sleep(700);
+                    }
+                }
+                ConvertOne(e.FullPath, outDir, wantPng, wantAvif, wantJpeg, 60, 0, avifencPath, ultrahdrPath);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"error [{e.FullPath}]: {ex.Message}");
+            }
+        };
+
+        System.Threading.Thread.Sleep(System.Threading.Timeout.Infinite);
+        return 0;
+    }
+
+    // ---- Explorer context menu integration (HKCU, no admin required) ----
+
+    private static (string Key, string Label, string Args)[] MenuEntries =>
+    [
+        ("HdrShotJpeg", "转换为 HDR JPEG (分享)", "-f jpeg"),
+        ("HdrShotAll", "转换为 HDR 全部格式 (JPEG+PNG+AVIF)", "-f all"),
+    ];
+
+    private static int InstallMenus()
+    {
+        string self = Path.Combine(AppContext.BaseDirectory, "hdrshot.exe");
+        if (!File.Exists(self)) self = Environment.ProcessPath ?? "hdrshot.exe";
+        foreach (var (key, label, args) in MenuEntries)
+        {
+            RunReg($"add \"HKCU\\Software\\Classes\\SystemFileAssociations\\.jxr\\shell\\{key}\" /ve /t REG_SZ /d \"{label}\" /f");
+            RunReg($"add \"HKCU\\Software\\Classes\\SystemFileAssociations\\.jxr\\shell\\{key}\\command\" /ve /t REG_SZ /d \"\\\"{self}\\\" \\\"%1\\\" {args}\" /f");
+            Console.WriteLine($"installed: {label} (.jxr)");
+        }
+        Console.WriteLine("done — right-click a .jxr file to use");
+        return 0;
+    }
+
+    private static int UninstallMenus()
+    {
+        foreach (var (key, _, _) in MenuEntries)
+        {
+            RunReg($"delete \"HKCU\\Software\\Classes\\SystemFileAssociations\\.jxr\\shell\\{key}\" /f");
+            Console.WriteLine($"removed: {key}");
+        }
+        return 0;
+    }
+
+    private static void RunReg(string arguments)
+    {
+        var psi = new ProcessStartInfo("reg.exe", arguments)
+        {
+            UseShellExecute = false,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        using var p = Process.Start(psi) ?? throw new InvalidOperationException("failed to start reg.exe");
+        p.WaitForExit();
+        if (p.ExitCode != 0) throw new InvalidOperationException($"reg.exe failed: {p.StandardError.ReadToEnd().Trim()}");
+    }
+
     private static void PrintHelp()
     {
         Console.WriteLine("""
             hdrshot — convert Windows/NVIDIA HDR screenshots (.jxr, scRGB float) to shareable HDR formats
 
             usage: hdrshot <files or wildcards...> [options]
+                   (or drag .jxr files onto hdrshot.exe)
 
-              output HDR PNG (16-bit, BT.2020 + PQ, cICP + cLLi) and HDR AVIF (10-bit)
-              — keeps the full HDR brightness of the original screenshot.
+            outputs (all keep the full HDR brightness of the original):
+              UltraHDR JPEG  SDR-compatible base + gain map — shows HDR in Chrome/Edge/
+                             Safari 26/Android 14+, falls back to normal JPEG elsewhere
+                             (default; best for sharing)
+              HDR PNG        16-bit, BT.2020 + PQ, cICP + cLLi (lossless-ish archive)
+              HDR AVIF       10-bit PQ BT.2020 (tiny, for web/technical audience)
 
             options:
-              -f png|avif|both   output format (default: both; falls back to png if avifenc missing)
-              -o <dir>           output directory (default: same folder as input)
-              -q <0-100>         AVIF quality (default 60)
-              --avifenc <path>   path to avifenc.exe (otherwise tools\avifenc.exe or PATH)
+              -f jpeg|png|avif|all   output format (default: jpeg)
+              -o <dir>               output directory (default: same folder as input)
+              -q <0-100>             AVIF quality (default 60)
+              --sdr-white <nits>     SDR white level for the UltraHDR base image
+                                     (default: auto = 2× image MaxFALL, clamped 203–1000)
+              --avifenc <path>       path to avifenc.exe (otherwise tools\avifenc.exe or PATH)
+              --ultrahdr <path>      path to ultrahdr_app.exe (otherwise tools\)
+              --watch <dir>          watch a folder and auto-convert new .jxr files
+              --gui                  open the drag-drop GUI
+              --install-menus        add "转换为 HDR" right-click menu for .jxr files (HKCU)
+              --uninstall-menus      remove the right-click menu entries
 
             examples:
-              hdrshot screenshot.jxr
-              hdrshot *.jxr -o D:\share -f avif
-              hdrshot (or drag .jxr files onto hdrshot.exe)
+              hdrshot screenshot.jxr                  # -> screenshot.jpg (UltraHDR)
+              hdrshot *.jxr -f all -o D:\share
+              hdrshot --install-menus
 
             source formats: 128bppRGBAFloat (NVIDIA FP32) / 64bppRGBAHalf (Windows FP16) and other scRGB float variants
             """);

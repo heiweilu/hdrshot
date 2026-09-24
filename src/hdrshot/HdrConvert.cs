@@ -134,4 +134,88 @@ internal static class HdrConvert
         double code = PqEncode(Math.Clamp(y, 0.0, 1.0)) * maxTarget;
         return (long)Math.Round(code);
     }
+
+    /// <summary>
+    /// scRGB linear float → 8-bit SDR YUV420 **planar I420** (BT.709 limited, sRGB-encoded),
+    /// for the UltraHDR SDR base intent (libultrahdr UHDR_IMG_FMT_12bppYCbCr420 = planar, NOT NV12).
+    /// Tone mapping: display-light mapping at <paramref name="sdrWhiteOverride"/> nits
+    /// (0 = auto: 2× MaxFALL, clamped to [203, 1000]); highlights clip like a real display.
+    /// scRGB is already BT.709 primaries, so no gamut conversion is needed.
+    /// </summary>
+    public static byte[] ScRgbToSdrYuv420(float[] rgba, uint width, uint height, double maxFallNits, out double usedSdrWhiteNits, double sdrWhiteOverride = 0)
+    {
+        long count = (long)width * height;
+
+        double sdrWhite = sdrWhiteOverride > 0
+            ? sdrWhiteOverride
+            : Math.Clamp(maxFallNits * 2.0, 203.0, 1000.0);
+        usedSdrWhiteNits = sdrWhite;
+
+        var yPlane = new byte[count];
+
+        // pass 1: display-light mapping (nits → [0,1] by SDR white, highlights clip like a real
+        // display would) then exact sRGB encoding
+        var rgb8 = new byte[count * 3];
+        for (long p = 0; p < count; p++)
+        {
+            double r = Math.Max(rgba[p * 4 + 0], 0) * 80.0;
+            double g = Math.Max(rgba[p * 4 + 1], 0) * 80.0;
+            double b = Math.Max(rgba[p * 4 + 2], 0) * 80.0;
+
+            rgb8[p * 3 + 0] = SdrByte(r / sdrWhite);
+            rgb8[p * 3 + 1] = SdrByte(g / sdrWhite);
+            rgb8[p * 3 + 2] = SdrByte(b / sdrWhite);
+        }
+
+        // pass 2: BT.709 luma (limited) + 2x2-averaged chroma
+        for (long p = 0; p < count; p++)
+        {
+            double rr = rgb8[p * 3 + 0] / 255.0;
+            double gg = rgb8[p * 3 + 1] / 255.0;
+            double bb = rgb8[p * 3 + 2] / 255.0;
+            yPlane[p] = (byte)Math.Round(16.0 + 219.0 * (0.2126 * rr + 0.7152 * gg + 0.0722 * bb));
+        }
+        long o = 0;
+        var uPlane = new byte[(width / 2) * (height / 2)];
+        var vPlane = new byte[(width / 2) * (height / 2)];
+        for (uint by = 0; by < height; by += 2)
+        {
+            for (uint bx = 0; bx < width; bx += 2)
+            {
+                long i00 = (by * width + bx) * 3;
+                long i10 = i00 + 3;
+                long i01 = i00 + width * 3;
+                long i11 = i01 + 3;
+
+                double rr = (rgb8[i00] + rgb8[i10] + rgb8[i01] + rgb8[i11]) / (4.0 * 255.0);
+                double gg = (rgb8[i00 + 1] + rgb8[i10 + 1] + rgb8[i01 + 1] + rgb8[i11 + 1]) / (4.0 * 255.0);
+                double bb = (rgb8[i00 + 2] + rgb8[i10 + 2] + rgb8[i01 + 2] + rgb8[i11 + 2]) / (4.0 * 255.0);
+
+                double cb = -0.100643 * rr - 0.338688 * gg + 0.439331 * bb; // BT.709 Cb (normalized)
+                double cr = 0.439331 * rr - 0.398942 * gg - 0.040389 * bb;  // BT.709 Cr (normalized)
+
+                uPlane[o] = (byte)Math.Round(128.0 + 224.0 * cb);
+                vPlane[o] = (byte)Math.Round(128.0 + 224.0 * cr);
+                o++;
+            }
+        }
+
+        var yuv = new byte[yPlane.Length + uPlane.Length + vPlane.Length];
+        yPlane.CopyTo(yuv, 0);
+        uPlane.CopyTo(yuv, yPlane.Length);
+        vPlane.CopyTo(yuv, yPlane.Length + uPlane.Length);
+        return yuv;
+    }
+
+    private static byte SdrByte(double linear)
+    {
+        double e = SrgbOetf(Math.Clamp(linear, 0.0, 1.0));
+        return (byte)Math.Round(e * 255.0);
+    }
+
+    /// <summary>Exact IEC 61966-2-1 sRGB piecewise encoding function.</summary>
+    private static double SrgbOetf(double x)
+    {
+        return x <= 0.0031308 ? x * 12.92 : 1.055 * Math.Pow(x, 1.0 / 2.4) - 0.055;
+    }
 }

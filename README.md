@@ -1,7 +1,8 @@
-# hdrshot — HDR 截图转换工具（M1）
+# hdrshot — HDR 截图转换工具
 
 把 Windows / NVIDIA 在 HDR 显示器下截出的 `.jxr`（scRGB 浮点）无损转换成可分享的 HDR 格式：
 
+- **UltraHDR JPEG**（默认输出）：SDR 兜底基底 + gain map（ISO 21496-1）——Chrome/Edge/Safari 26/Android 14+ 显示真 HDR，其他地方显示正常 SDR JPEG
 - **HDR PNG**：16-bit、BT.2020 + PQ（10-bit 数据装在 16-bit 容器）、`cICP` + `cLLi` 元数据 —— Chrome/Edge 117+ 直接以真 HDR 显示
 - **HDR AVIF**：10-bit PQ BT.2020（YUV444，体积约为 PNG 的 1/28；经内置 avifenc 1.4.2）
 
@@ -10,19 +11,24 @@
 - 5 个微软官方 FP16 样本：99.96% 像素完全一致，其余差异全部为 1 个 10-bit 量化步长（浮点舍入级）；MaxCLL/MaxFALL 逐位一致
 - 真实 NVIDIA FP32 截图（3840×1600，`128bppRGBAFloat`）：**100% 逐位一致（0 差异）**
 
+UltraHDR JPEG 验证：合成彩虹 100% 保色；`libultrahdr` 自解码回读通过；ISO 21496-1 元数据写入确认；SDR 基底逐分位数与源色度一致。
+
 ## 用法
 
 ```
-hdrshot <文件或通配符...> [-f png|avif|both] [-o 输出目录] [-q 60] [--avifenc 路径]
+hdrshot <文件或通配符...> [-f jpeg|png|avif|all] [-o 输出目录] [--sdr-white nits]
+hdrshot --gui              # 拖拽图形界面
+hdrshot --watch <目录>     # 监视文件夹，自动转换新截图
+hdrshot --install-menus    # 添加资源管理器右键"转换为 HDR"（HKCU，免管理员）
 ```
 
-也可以直接把 `.jxr` 拖到 `hdrshot.exe` 图标上。
+也可以直接把 `.jxr` 拖到 `hdrshot.exe` 图标上，或运行 `hdrshot --gui` 后在窗口内拖放。
 
 示例：
 
 ```
-hdrshot screenshot.jxr
-hdrshot *.jxr -o D:\share -f png
+hdrshot screenshot.jxr                # -> screenshot.jpg (UltraHDR)
+hdrshot *.jxr -f all -o D:\share
 ```
 
 ## 支持的输入
@@ -41,16 +47,17 @@ scRGB 语义按 Microsoft Advanced Color 规范处理：BT.709 原色、线性�
 
 ```
 dotnet build src/hdrshot -c Release
-dotnet publish src/hdrshot -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
+dotnet publish src/hdrshot -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true
 ```
 
-运行时零第三方依赖（解码走系统 WIC，PNG 编码纯 .NET）。AVIF 出口需要捆绑 `tools\avifenc.exe` 及其 DLL（MSYS2 mingw-w64-libavif）。
+运行时零第三方依赖（解码走系统 WIC，PNG 编码纯 .NET）。UltraHDR/AVIF 出口需要 `tools\` 下的编码器组件（ultrahdr_app.exe / avifenc.exe 及 DLL），可用 `scripts/fetch-tools.ps1` 从 MSYS2 自动拉取组装。
 
 ## 设计文档
 
 见 [docs/01-调研与设计方案.md](docs/01-调研与设计方案.md)。
 
-## 已知限制（M1）
+## 已知限制
 
+- UltraHDR 的 SDR 兜底基底按 `--sdr-white`（默认自适应 2×MaxFALL）映射，Windows 原生 App 看 UltraHDR 仍是 SDR 观感（生态限制）
 - 负值（广色域）直接裁剪，不做完整 gamut mapping（社区主流做法，截图场景影响可忽略）
-- UltraHDR JPEG 出口与资源管理器右键集成待 M2
+- GUI 需要交互桌面会话；微信/QQ 走普通图片消息会被压成 SDR——分享请勾"原图"或发文件
