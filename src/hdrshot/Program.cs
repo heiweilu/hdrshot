@@ -475,7 +475,7 @@ internal static class Program
               --jpg-peak <nits>      UltraHDR JPEG highlight compression: soft knee above
                                      peak/4 nits, rolling off toward this peak (default 300;
                                      0 = off, keeps absolute HDR brightness)
-              --jpg-scale <factor>   UltraHDR JPEG overall luminance scale (default 1.0;
+              --jpg-scale <factor>   UltraHDR JPEG overall luminance scale (default 0.45;
                                      e.g. 0.75 darkens midtones too, not just highlights)
               --jpg-flat             build the SDR base from the processed HDR intent, so the
                                      gain map stays ~1.0 and shadows render identically in
