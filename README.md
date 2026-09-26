@@ -6,15 +6,15 @@
 
 > 以下对比图均为上下结构：**上半部分是原图**（高光直接映射，天空与霓虹溢出成死白），**下半部分是 hdrshot 转换后**（亮度比软拐点压缩，云层结构与灯牌细节完整保留）。素材为《赛博朋克 2077》HDR 截图（3840×1600）。
 
-![对比1：上为原图，下为转换后](https://tuchuang.heiweilu.top/PixPin_2026-09-26_12-16-44.png)
+![对比1：上为原图，下为转换后](readme-assets/compare-1.jpg)
 
-![对比2：上为原图，下为转换后](https://tuchuang.heiweilu.top/PixPin_2026-09-26_12-17-15.png)
+![对比2：上为原图，下为转换后](readme-assets/compare-2.jpg)
 
 ## 图形界面
 
 双击即用，拖入 `.jxr` 即可转换；峰值亮度与缩放可直接调：
 
-![hdrshot GUI](https://tuchuang.heiweilu.top/PixPin_2026-09-26_12-14-58.png)
+![hdrshot GUI](readme-assets/gui.png)
 
 ## 输出格式
 

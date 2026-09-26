@@ -17,3 +17,6 @@ samples/
 
 # internal design docs (local only)
 docs/
+
+# README images
+!readme-assets/*.png
