@@ -14,3 +14,6 @@ samples/
 *.png
 *.avif
 !docs/**/*.png
+
+# internal design docs (local only)
+docs/

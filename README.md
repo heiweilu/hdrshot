@@ -2,6 +2,22 @@
 
 把 Windows / NVIDIA 在 HDR 显示器下截出的 `.jxr`（scRGB 浮点）无损转换成可分享的 HDR 格式：
 
+## 效果对比
+
+> 以下对比图均为上下结构：**上半部分是原图**（高光直接映射，天空与霓虹溢出成死白），**下半部分是 hdrshot 转换后**（亮度比软拐点压缩，云层结构与灯牌细节完整保留）。素材为《赛博朋克 2077》HDR 截图（3840×1600）。
+
+![对比1：上为原图，下为转换后](https://tuchuang.heiweilu.top/PixPin_2026-09-26_12-16-44.png)
+
+![对比2：上为原图，下为转换后](https://tuchuang.heiweilu.top/PixPin_2026-09-26_12-17-15.png)
+
+## 图形界面
+
+双击即用，拖入 `.jxr` 即可转换；峰值亮度与缩放可直接调：
+
+![hdrshot GUI](https://tuchuang.heiweilu.top/PixPin_2026-09-26_12-14-58.png)
+
+## 输出格式
+
 - **UltraHDR JPEG**（默认输出）：SDR 兜底基底 + gain map（ISO 21496-1）——Chrome/Edge/Safari 26/Android 14+ 显示真 HDR，其他地方显示正常 SDR JPEG
 - **HDR PNG**：16-bit、BT.2020 + PQ（10-bit 数据装在 16-bit 容器）、`cICP` + `cLLi` 元数据 —— Chrome/Edge 117+ 直接以真 HDR 显示
 - **HDR AVIF**：10-bit PQ BT.2020（YUV444，体积约为 PNG 的 1/28；经内置 avifenc 1.4.2）
@@ -51,10 +67,6 @@ dotnet publish src/hdrshot -c Release -r win-x64 --self-contained true -p:Publis
 ```
 
 运行时零第三方依赖（解码走系统 WIC，PNG 编码纯 .NET）。UltraHDR/AVIF 出口需要 `tools\` 下的编码器组件（ultrahdr_app.exe / avifenc.exe 及 DLL），可用 `scripts/fetch-tools.ps1` 从 MSYS2 自动拉取组装。
-
-## 设计文档
-
-见 [docs/01-调研与设计方案.md](docs/01-调研与设计方案.md)。
 
 ## 已知限制
 
