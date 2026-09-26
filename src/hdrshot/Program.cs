@@ -8,6 +8,11 @@ namespace HdrShot;
 
 internal static class Program
 {
+    /// <summary>Default UltraHDR JPEG highlight peak (nits); soft knee sits at peak/4. 0 disables compression.</summary>
+    internal const double DefaultJpgPeakNits = 300.0;
+    internal const double DefaultJpgScale = 0.45;
+    internal const double MinJpgPeakNits = 203.0;
+
     [DllImport("kernel32.dll")]
     private static extern uint GetConsoleProcessList([Out] uint[] processList, uint processCount);
 
@@ -26,6 +31,7 @@ internal static class Program
         catch { return false; }
     }
 
+    [STAThread] // WinForms/OLE 拖放要求 STA；MTA 下 RegisterDragDrop 会挂起 UI 线程
     private static int Main(string[] args)
     {
         try
@@ -62,7 +68,7 @@ internal static class Program
         {
             return PngCompare.Run(args[1], args[2]);
         }
-        if (args.Length == 1 && args[0] == "--gui")
+        if (args.Length == 0 || (args.Length == 1 && args[0] == "--gui"))
         {
             return Gui.Run();
         }
@@ -84,6 +90,9 @@ internal static class Program
         string format = "jpeg";
         int quality = 60;
         double sdrWhite = 0;
+        double jpgPeak = DefaultJpgPeakNits;
+        double jpgScale = DefaultJpgScale;
+        bool jpgFlatBase = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -101,6 +110,15 @@ internal static class Program
                     break;
                 case "--sdr-white":
                     sdrWhite = double.Parse(args[++i]);
+                    break;
+                case "--jpg-peak":
+                    jpgPeak = double.Parse(args[++i]);
+                    break;
+                case "--jpg-scale":
+                    jpgScale = double.Parse(args[++i]);
+                    break;
+                case "--jpg-flat":
+                    jpgFlatBase = true;
                     break;
                 case "--avifenc":
                     Environment.SetEnvironmentVariable("HDRSHOT_AVIFENC", args[++i]);
@@ -179,7 +197,7 @@ internal static class Program
         {
             try
             {
-                ConvertOne(input, outDir, wantPng, wantAvif, wantJpeg, quality, sdrWhite, avifencPath, ultrahdrPath);
+                ConvertOne(input, outDir, wantPng, wantAvif, wantJpeg, quality, sdrWhite, jpgPeak, jpgScale, jpgFlatBase, avifencPath, ultrahdrPath);
             }
             catch (Exception ex)
             {
@@ -193,7 +211,7 @@ internal static class Program
     }
 
     internal static void ConvertOne(string input, string? outDir, bool wantPng, bool wantAvif, bool wantJpeg,
-        int quality, double sdrWhite, string? avifencPath, string? ultrahdrPath)
+        int quality, double sdrWhite, double jpgPeak, double jpgScale, bool jpgFlatBase, string? avifencPath, string? ultrahdrPath)
     {
         var sw = Stopwatch.StartNew();
         string fullPath = Path.GetFullPath(input);
@@ -211,11 +229,43 @@ internal static class Program
 
         if (wantJpeg)
         {
-            var sdrYuv = HdrConvert.ScRgbToSdrYuv420(rgba, width, height, converted.MaxFallNits, out double usedWhite, sdrWhite);
-            Console.WriteLine($"  UltraHDR SDR base: white = {usedWhite:F0} nits (mapped from {converted.MaxFallNits} nits MaxFALL)");
+            var jpgPixels = converted.Pixels;
+            if (jpgScale != 1.0)
+            {
+                jpgPixels = HdrConvert.ScalePq(jpgPixels, jpgScale);
+                Console.WriteLine($"  UltraHDR JPG: overall luminance scale x{jpgScale:F2} (midtones included)");
+            }
+            if (jpgPeak > 0)
+            {
+                if (jpgPeak < MinJpgPeakNits)
+                {
+                    Console.WriteLine($"  note: jpg-peak {jpgPeak:F0} nits below the PQ floor, clamped to {MinJpgPeakNits:F0}");
+                    jpgPeak = MinJpgPeakNits;
+                }
+                jpgPixels = HdrConvert.CompressPqHighlightsLuma(jpgPixels, jpgPeak / 4.0, jpgPeak);
+                Console.WriteLine($"  UltraHDR JPG: luminance soft knee above {jpgPeak / 4.0:F0} nits, rolling off toward {jpgPeak:F0} nits");
+            }
+
+            byte[] sdrYuv;
+            double usedWhite;
+            if (jpgFlatBase)
+            {
+                // 基底直接从处理后的 HDR 意图生成：增益图 ≈1.0，暗部/中间调不依赖查看器
+                // 对 <1 增益的应用力度，任何查看器下渲染结果一致（所见即所得）。
+                usedWhite = sdrWhite > 0 ? sdrWhite : Math.Clamp(converted.MaxFallNits * 2.0, 203.0, 1000.0);
+                sdrYuv = HdrConvert.Pq10ToSdrYuv420(jpgPixels, width, height, usedWhite);
+                Console.WriteLine($"  UltraHDR SDR base: from processed intent, white = {usedWhite:F0} nits (gain map ~1.0, viewer-independent)");
+            }
+            else
+            {
+                // SDR 基底保持自动白点（不随峰值缩小）：Chrome 会响应 <1 的减光增益，
+                // 压低峰值只会压暗高光，不会抬亮中间调
+                sdrYuv = HdrConvert.ScRgbToSdrYuv420(rgba, width, height, converted.MaxFallNits, out usedWhite, sdrWhite);
+                Console.WriteLine($"  UltraHDR SDR base: white = {usedWhite:F0} nits (mapped from {converted.MaxFallNits} nits MaxFALL)");
+            }
 
             string jpegPath = Path.Combine(dir, baseName + ".jpg");
-            UltraHdrEncoder.EncodeFromPq10(converted.Pixels, sdrYuv, width, height, jpegPath, ultrahdrPath!);
+            UltraHdrEncoder.EncodeFromPq10(jpgPixels, sdrYuv, width, height, jpegPath, ultrahdrPath!, targetPeakNits: jpgPeak);
             Console.WriteLine($"  -> {jpegPath} ({new FileInfo(jpegPath).Length / 1048576.0:F1} MiB, {sw.ElapsedMilliseconds} ms)");
         }
 
@@ -341,7 +391,7 @@ internal static class Program
                         System.Threading.Thread.Sleep(700);
                     }
                 }
-                ConvertOne(e.FullPath, outDir, wantPng, wantAvif, wantJpeg, 60, 0, avifencPath, ultrahdrPath);
+                ConvertOne(e.FullPath, outDir, wantPng, wantAvif, wantJpeg, 60, 0, DefaultJpgPeakNits, DefaultJpgScale, false, avifencPath, ultrahdrPath);
             }
             catch (Exception ex)
             {
@@ -422,6 +472,14 @@ internal static class Program
               -q <0-100>             AVIF quality (default 60)
               --sdr-white <nits>     SDR white level for the UltraHDR base image
                                      (default: auto = 2× image MaxFALL, clamped 203–1000)
+              --jpg-peak <nits>      UltraHDR JPEG highlight compression: soft knee above
+                                     peak/4 nits, rolling off toward this peak (default 300;
+                                     0 = off, keeps absolute HDR brightness)
+              --jpg-scale <factor>   UltraHDR JPEG overall luminance scale (default 1.0;
+                                     e.g. 0.75 darkens midtones too, not just highlights)
+              --jpg-flat             build the SDR base from the processed HDR intent, so the
+                                     gain map stays ~1.0 and shadows render identically in
+                                     every viewer (no reliance on <1 gain-map darkening)
               --avifenc <path>       path to avifenc.exe (otherwise tools\avifenc.exe or PATH)
               --ultrahdr <path>      path to ultrahdr_app.exe (otherwise tools\)
               --watch <dir>          watch a folder and auto-convert new .jxr files

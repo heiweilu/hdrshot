@@ -39,6 +39,8 @@ internal static class Gui
         private readonly CheckBox _jpeg = new();
         private readonly CheckBox _png = new();
         private readonly CheckBox _avif = new();
+        private readonly NumericUpDown _jpgPeak = new();
+        private readonly NumericUpDown _jpgScale = new();
         private readonly TextBox _outDir = new();
         private readonly TextBox _log = new();
         private readonly Button _convert = new();
@@ -54,27 +56,39 @@ internal static class Gui
             AllowDrop = true;
             Font = new Font("Microsoft YaHei UI", 9f);
 
-            var addBtn = new Button { Text = "添加 .jxr 文件", Left = 12, Top = 12, Width = 120 };
-            var clearBtn = new Button { Text = "清空列表", Left = 140, Top = 12, Width = 90 };
-            var hint = new Label { Text = "也可直接把 .jxr 拖进窗口", Left = 240, Top = 17, Width = 300, ForeColor = Color.DimGray };
+            var addBtn = new Button { Text = "添加 .jxr 文件", Left = 12, Top = 12, AutoSize = true };
+            var clearBtn = new Button { Text = "清空列表", Left = 170, Top = 12, AutoSize = true };
+            var hint = new Label { Text = "也可直接把 .jxr 拖进窗口", Left = 290, Top = 17, AutoSize = true, ForeColor = Color.DimGray };
             _files.SetBounds(12, 44, 500, 180);
             _files.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Bottom;
 
             var fmtLabel = new Label { Text = "输出格式：", Left = 12, Top = 236, Width = 80 };
-            _jpeg.Text = "UltraHDR JPEG（推荐分享）"; _jpeg.Left = 95; _jpeg.Top = 234; _jpeg.Width = 200; _jpeg.Checked = true;
-            _png.Text = "HDR PNG"; _png.Left = 300; _png.Top = 234; _png.Width = 90; _png.Checked = true;
-            _avif.Text = "HDR AVIF"; _avif.Left = 395; _avif.Top = 234; _avif.Width = 100;
+            _jpeg.Text = "UltraHDR JPEG（推荐分享）"; _jpeg.Left = 95; _jpeg.Top = 234; _jpeg.AutoSize = true; _jpeg.Checked = true;
+            _png.Text = "HDR PNG"; _png.Left = 345; _png.Top = 234; _png.AutoSize = true; _png.Checked = true;
+            _avif.Text = "HDR AVIF"; _avif.Left = 470; _avif.Top = 234; _avif.AutoSize = true;
 
-            var outLabel = new Label { Text = "输出目录：", Left = 12, Top = 268, Width = 80 };
-            _outDir.SetBounds(95, 264, 410, 24);
-            _browse.Text = "浏览…"; _browse.Left = 510; _browse.Top = 263; _browse.Width = 60;
+            var peakLabel = new Label { Text = "JPG 峰值：", Left = 12, Top = 268, Width = 80 };
+            _jpgPeak.SetBounds(95, 265, 90, 24);
+            _jpgPeak.Minimum = 0; _jpgPeak.Maximum = 10000; _jpgPeak.Increment = 50;
+            _jpgPeak.Value = (decimal)Program.DefaultJpgPeakNits;
+            var peakHint = new Label { Text = "nits（0 = 不压缩，最低 203）", Left = 195, Top = 268, AutoSize = true, ForeColor = Color.DimGray };
 
-            _convert.Text = "开始转换"; _convert.SetBounds(12, 300, 120, 34);
-            _log.SetBounds(12, 344, 700, 165);
+            var scaleLabel = new Label { Text = "亮度系数：", Left = 360, Top = 268, Width = 70 };
+            _jpgScale.SetBounds(435, 265, 70, 24);
+            _jpgScale.DecimalPlaces = 2; _jpgScale.Minimum = 0.10m; _jpgScale.Maximum = 1.00m; _jpgScale.Increment = 0.05m;
+            _jpgScale.Value = (decimal)Program.DefaultJpgScale;
+            var scaleHint = new Label { Text = "越小越暗", Left = 515, Top = 268, AutoSize = true, ForeColor = Color.DimGray };
+
+            var outLabel = new Label { Text = "输出目录：", Left = 12, Top = 300, Width = 80 };
+            _outDir.SetBounds(95, 296, 410, 24);
+            _browse.Text = "浏览…"; _browse.Left = 510; _browse.Top = 295; _browse.AutoSize = true;
+
+            _convert.Text = "开始转换"; _convert.SetBounds(12, 332, 120, 34);
+            _log.SetBounds(12, 376, 700, 133);
             _log.Multiline = true; _log.ScrollBars = ScrollBars.Vertical; _log.ReadOnly = true;
             _log.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
 
-            Controls.AddRange([addBtn, clearBtn, hint, _files, fmtLabel, _jpeg, _png, _avif, outLabel, _outDir, _browse, _convert, _log]);
+            Controls.AddRange([addBtn, clearBtn, hint, _files, fmtLabel, _jpeg, _png, _avif, peakLabel, _jpgPeak, peakHint, scaleLabel, _jpgScale, scaleHint, outLabel, _outDir, _browse, _convert, _log]);
 
             addBtn.Click += (_, _) =>
             {
@@ -124,6 +138,7 @@ internal static class Gui
             {
                 string? outDir = string.IsNullOrWhiteSpace(_outDir.Text) ? null : _outDir.Text;
                 bool jpeg = _jpeg.Checked, png = _png.Checked, avif = _avif.Checked;
+                double jpgPeak = (double)_jpgPeak.Value;
                 var files = _files.Items.Cast<string>().ToList();
                 int failures = 0;
 
@@ -133,7 +148,7 @@ internal static class Gui
                     {
                         try
                         {
-                            Program.ConvertOne(input, outDir, png, avif, jpeg, 60, 0, avif ? Program.RequireTool("avifenc.exe", "HDRSHOT_AVIFENC") : null, jpeg ? Program.RequireTool("ultrahdr_app.exe", "HDRSHOT_ULTRAHDR") : null);
+                            Program.ConvertOne(input, outDir, png, avif, jpeg, 60, 0, jpgPeak, (double)_jpgScale.Value, false, avif ? Program.RequireTool("avifenc.exe", "HDRSHOT_AVIFENC") : null, jpeg ? Program.RequireTool("ultrahdr_app.exe", "HDRSHOT_ULTRAHDR") : null);
                             Log($"完成: {Path.GetFileName(input)}");
                         }
                         catch (Exception ex)

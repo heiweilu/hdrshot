@@ -10,6 +10,10 @@
     <RootNamespace>HdrShot</RootNamespace>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- 单文件分发：把原生 DLL 也打进 exe（首次运行自解压到 %TEMP%），并去掉 pdb -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
 
 </Project>

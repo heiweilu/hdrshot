@@ -17,8 +17,12 @@ internal static class UltraHdrEncoder
     /// (8-bit BT.709 limited, sRGB-encoded) — so the SDR base rendering is fully controlled by
     /// us, and the gain map is computed by the library from the two intents.
     /// </summary>
+    /// <param name="targetPeakNits">When &gt; 0, passed to ultrahdr_app as -L (target display peak
+    /// brightness). Should match the actual peak of the (possibly highlight-compressed) HDR intent
+    /// so the gain map capacity range stays honest.</param>
     public static void EncodeFromPq10(ushort[] pqPixels, byte[] sdrYuv420, uint width, uint height,
-        string outputPath, string ultrahdrAppPath, int sdrQuality = 95, int gainMapQuality = 90, int gainMapDownsample = 2)
+        string outputPath, string ultrahdrAppPath, int sdrQuality = 95, int gainMapQuality = 90,
+        int gainMapDownsample = 2, double targetPeakNits = 0)
     {
         if ((width & 1) != 0 || (height & 1) != 0)
             throw new NotSupportedException("P010/I420 require even dimensions");
@@ -34,11 +38,12 @@ internal static class UltraHdrEncoder
                 File.Copy(yuvPath, Path.Combine(Path.GetDirectoryName(outputPath)!, "debug_sdr.i420"), true);
             }
 
+            string peakArg = targetPeakNits > 0 ? $"-L {targetPeakNits:F0} " : "";
             var psi = new ProcessStartInfo
             {
                 FileName = ultrahdrAppPath,
                 Arguments = $"-m 0 -p \"{p010Path}\" -y \"{yuvPath}\" -w {width} -h {height} " +
-                            $"-a 0 -b 1 -t 2 -C 2 -c 0 -R 0 " +
+                            $"-a 0 -b 1 -t 2 -C 2 -c 0 -R 0 " + peakArg +
                             $"-q {sdrQuality} -Q {gainMapQuality} -s {gainMapDownsample} -z \"{outputPath}\"",
                 UseShellExecute = false,
                 RedirectStandardError = true,
@@ -73,9 +78,12 @@ internal static class UltraHdrEncoder
         long count = ySamples;
         for (long i = 0; i < count; i++)
         {
-            double r = pqPixels[i * 3 + 0] / 1023.0;
-            double g = pqPixels[i * 3 + 1] / 1023.0;
-            double b = pqPixels[i * 3 + 2] / 1023.0;
+            // ConvertResult.Pixels are 10-bit PQ codes MSB-aligned in 16-bit containers
+            // (code << 6) — normalize by 65535, not 1023 (dividing by 1023 saturated the
+            // entire HDR intent and produced a bogus gain map).
+            double r = pqPixels[i * 3 + 0] / 65535.0;
+            double g = pqPixels[i * 3 + 1] / 65535.0;
+            double b = pqPixels[i * 3 + 2] / 65535.0;
 
             double y = (0.2627 * r + 0.6780 * g + 0.0593 * b) * 876.0 + 64.0;
             ushort y10 = Clamp10(Math.Round(y));
@@ -97,9 +105,9 @@ internal static class UltraHdrEncoder
                 long i01 = i00 + width * 3;
                 long i11 = i01 + 3;
 
-                double r = (pqPixels[i00] + pqPixels[i10] + pqPixels[i01] + pqPixels[i11]) / (4.0 * 1023.0);
-                double g = (pqPixels[i00 + 1] + pqPixels[i10 + 1] + pqPixels[i01 + 1] + pqPixels[i11 + 1]) / (4.0 * 1023.0);
-                double b = (pqPixels[i00 + 2] + pqPixels[i10 + 2] + pqPixels[i01 + 2] + pqPixels[i11 + 2]) / (4.0 * 1023.0);
+                double r = (pqPixels[i00] + pqPixels[i10] + pqPixels[i01] + pqPixels[i11]) / (4.0 * 65535.0);
+                double g = (pqPixels[i00 + 1] + pqPixels[i10 + 1] + pqPixels[i01 + 1] + pqPixels[i11 + 1]) / (4.0 * 65535.0);
+                double b = (pqPixels[i00 + 2] + pqPixels[i10 + 2] + pqPixels[i01 + 2] + pqPixels[i11 + 2]) / (4.0 * 65535.0);
 
                 double cb = (-0.13963 * r - 0.36037 * g + 0.5 * b) * 896.0 + 512.0;
                 double cr = (0.5 * r - 0.45979 * g - 0.04021 * b) * 896.0 + 512.0;

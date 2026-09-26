@@ -7,6 +7,7 @@ namespace HdrShot;
 /// <summary>
 /// Minimal 16-bit truecolor PNG writer with HDR metadata:
 ///   cICP = (9, 16, 0, 1): BT.2020 primaries, ST 2084 (PQ) transfer, identity matrix (RGB), full range.
+///   cHRM = BT.2020 chromaticities (same as avifdec/libpng; required for correct Chrome HDR display).
 ///   cLLi = MaxCLL / MaxFALL in 0.0001 nits as 32-bit BE (same as ledoge/jxr_to_png).
 /// Zero external dependencies (deflate via System.IO.Compression).
 /// </summary>
@@ -33,6 +34,15 @@ internal static class PngWriter
 
         // cICP — must appear before IDAT (PNG third edition)
         WriteChunk(fs, "cICP"u8, new byte[] { 9, 16, 0, 1 });
+
+        // cHRM — BT.2020 chromaticities (x100000, BE): D65 white, R, G, B.
+        // Same values avifdec/libpng write. Chrome's GPU/HDR path mis-renders
+        // PQ PNGs that carry cLLi but no cHRM (yellowish/desaturated); writing
+        // cHRM fixes it. Verified by user A/B test (B-cHRM.png variant).
+        var chrm = new byte[32];
+        uint[] chrmVals = { 31270, 32900, 70800, 29200, 17000, 79700, 13100, 4600 };
+        for (int i = 0; i < 8; i++) WriteU32(chrm, i * 4, chrmVals[i]);
+        WriteChunk(fs, "cHRM"u8, chrm);
 
         // cLLi
         var clli = new byte[8];

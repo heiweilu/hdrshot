@@ -136,6 +136,97 @@ internal static class HdrConvert
     }
 
     /// <summary>
+    /// Soft-knee highlight compression in the PQ domain (JPG path only — PNG/AVIF keep true HDR).
+    /// Values below kneeNits pass through unchanged; above the knee a Reinhard-style curve rolls
+    /// off smoothly toward the asymptote peakNits, preserving highlight gradation (e.g. clouds
+    /// around the sun) instead of clipping. Applied per channel, so bright colors desaturate
+    /// slightly (filmic behavior).
+    /// </summary>
+    public static ushort[] CompressPqHighlights(ushort[] pqPixels, double kneeNits, double peakNits,
+        int dataBits = 10, int containerBits = 16)
+    {
+        if (peakNits <= kneeNits) throw new ArgumentOutOfRangeException(nameof(peakNits), "peak must be above the knee");
+        int shift = containerBits - dataBits;
+        int maxCode = (1 << dataBits) - 1;
+        int containerMax = (1 << containerBits) - 1;
+
+        // LUT: PQ code -> compressed PQ code (monotonic, so per-code mapping is exact)
+        var lut = new ushort[maxCode + 1];
+        for (int code = 0; code <= maxCode; code++)
+        {
+            double nits = PqInverse((double)code / maxCode) * 10000.0;
+            double mapped = nits <= kneeNits
+                ? nits
+                : kneeNits + (nits - kneeNits) / (1.0 + (nits - kneeNits) / (peakNits - kneeNits));
+            lut[code] = (ushort)Math.Min(NitsToPqCode(mapped, dataBits) << shift, containerMax);
+        }
+
+        var outPixels = new ushort[pqPixels.LongLength];
+        for (long i = 0; i < pqPixels.LongLength; i++)
+            outPixels[i] = lut[pqPixels[i] >> shift];
+        return outPixels;
+    }
+
+    /// <summary>
+    /// Scales absolute luminance of PQ-encoded pixels by a constant factor (all nits × scale).
+    /// Unlike the highlight knee, this darkens midtones too. LUT-based, exact per code.
+    /// </summary>
+    public static ushort[] ScalePq(ushort[] pqPixels, double scale, int dataBits = 10, int containerBits = 16)
+    {
+        if (scale <= 0) throw new ArgumentOutOfRangeException(nameof(scale), "scale must be positive");
+        int shift = containerBits - dataBits;
+        int maxCode = (1 << dataBits) - 1;
+        int containerMax = (1 << containerBits) - 1;
+
+        var lut = new ushort[maxCode + 1];
+        for (int code = 0; code <= maxCode; code++)
+        {
+            double nits = PqInverse((double)code / maxCode) * 10000.0 * scale;
+            lut[code] = (ushort)Math.Min(NitsToPqCode(nits, dataBits) << shift, containerMax);
+        }
+
+        var outPixels = new ushort[pqPixels.LongLength];
+        for (long i = 0; i < pqPixels.LongLength; i++)
+            outPixels[i] = lut[pqPixels[i] >> shift];
+        return outPixels;
+    }
+
+    /// <summary>
+    /// Same soft knee as <see cref="CompressPqHighlights"/>, but driven by per-pixel LUMINANCE:
+    /// the compression ratio is computed from BT.2020 luma and applied equally to all three
+    /// channels, so hue and saturation are preserved exactly (bright blue skies stay blue
+    /// instead of being pulled toward neutral gray).
+    /// </summary>
+    public static ushort[] CompressPqHighlightsLuma(ushort[] pqPixels, double kneeNits, double peakNits,
+        int dataBits = 10, int containerBits = 16)
+    {
+        if (peakNits <= kneeNits) throw new ArgumentOutOfRangeException(nameof(peakNits), "peak must be above the knee");
+        int shift = containerBits - dataBits;
+        int maxCode = (1 << dataBits) - 1;
+        int containerMax = (1 << containerBits) - 1;
+
+        var nitsLut = new double[maxCode + 1];
+        for (int code = 0; code <= maxCode; code++)
+            nitsLut[code] = PqInverse((double)code / maxCode) * 10000.0;
+
+        var outPixels = new ushort[pqPixels.LongLength];
+        for (long p = 0; p < pqPixels.LongLength; p += 3)
+        {
+            double r = nitsLut[pqPixels[p] >> shift];
+            double g = nitsLut[pqPixels[p + 1] >> shift];
+            double b = nitsLut[pqPixels[p + 2] >> shift];
+            double luma = 0.2627 * r + 0.6780 * g + 0.0593 * b; // BT.2020 luma coefficients
+            double mapped = luma <= kneeNits ? luma
+                : kneeNits + (luma - kneeNits) / (1.0 + (luma - kneeNits) / (peakNits - kneeNits));
+            double ratio = luma > 1e-6 ? mapped / luma : 1.0;
+            outPixels[p] = (ushort)Math.Min(NitsToPqCode(r * ratio, dataBits) << shift, containerMax);
+            outPixels[p + 1] = (ushort)Math.Min(NitsToPqCode(g * ratio, dataBits) << shift, containerMax);
+            outPixels[p + 2] = (ushort)Math.Min(NitsToPqCode(b * ratio, dataBits) << shift, containerMax);
+        }
+        return outPixels;
+    }
+
+    /// <summary>
     /// scRGB linear float → 8-bit SDR YUV420 **planar I420** (BT.709 limited, sRGB-encoded),
     /// for the UltraHDR SDR base intent (libultrahdr UHDR_IMG_FMT_12bppYCbCr420 = planar, NOT NV12).
     /// Tone mapping: display-light mapping at <paramref name="sdrWhiteOverride"/> nits
@@ -167,7 +258,39 @@ internal static class HdrConvert
             rgb8[p * 3 + 2] = SdrByte(b / sdrWhite);
         }
 
-        // pass 2: BT.709 luma (limited) + 2x2-averaged chroma
+        return AssembleSdrYuv(rgb8, width, height);
+    }
+
+    /// <summary>
+    /// PQ 10-bit HDR intent → 8-bit SDR YUV420 base built FROM the processed intent itself
+    /// (after luminance scale / highlight knee). The gain map then stays ≈1.0, so the rendered
+    /// result does not depend on how aggressively a viewer applies &lt;1 gains — shadows and
+    /// midtones render exactly as designed on any viewer. Tone mapping: display-light at
+    /// <paramref name="sdrWhiteNits"/>, same as the scRGB path.
+    /// </summary>
+    public static byte[] Pq10ToSdrYuv420(ushort[] pqPixels, uint width, uint height, double sdrWhiteNits,
+        int dataBits = 10, int containerBits = 16)
+    {
+        long count = (long)width * height;
+        int shift = containerBits - dataBits;
+        int maxCode = (1 << dataBits) - 1;
+
+        var rgb8 = new byte[count * 3];
+        for (long p = 0; p < count; p++)
+        {
+            rgb8[p * 3 + 0] = SdrByte(PqInverse((double)(pqPixels[p * 3 + 0] >> shift) / maxCode) * 10000.0 / sdrWhiteNits);
+            rgb8[p * 3 + 1] = SdrByte(PqInverse((double)(pqPixels[p * 3 + 1] >> shift) / maxCode) * 10000.0 / sdrWhiteNits);
+            rgb8[p * 3 + 2] = SdrByte(PqInverse((double)(pqPixels[p * 3 + 2] >> shift) / maxCode) * 10000.0 / sdrWhiteNits);
+        }
+
+        return AssembleSdrYuv(rgb8, width, height);
+    }
+
+    /// <summary>Shared pass 2: BT.709 luma (limited) + 2x2-averaged chroma, planar I420 assembly.</summary>
+    private static byte[] AssembleSdrYuv(byte[] rgb8, uint width, uint height)
+    {
+        long count = (long)width * height;
+        var yPlane = new byte[count];
         for (long p = 0; p < count; p++)
         {
             double rr = rgb8[p * 3 + 0] / 255.0;
